@@ -260,12 +260,6 @@ func (ss *stdioServer) routeRequest(req *jsonRpcRequest) {
 	case "session.pairphone":
 		httpMethod = "POST"
 		httpPath = "/session/pairphone"
-	case "session.history":
-		httpMethod = "GET"
-		httpPath = "/session/history"
-	case "session.history.set":
-		httpMethod = "POST"
-		httpPath = "/session/history"
 	case "session.proxy":
 		httpMethod = "POST"
 		httpPath = "/session/proxy"
@@ -334,30 +328,6 @@ func (ss *stdioServer) routeRequest(req *jsonRpcRequest) {
 	case "chat.request-unavailable-message":
 		httpMethod = "POST"
 		httpPath = "/chat/request-unavailable-message"
-	case "chat.download.image":
-		httpMethod = "POST"
-		httpPath = "/chat/downloadimage"
-	case "chat.download.video":
-		httpMethod = "POST"
-		httpPath = "/chat/downloadvideo"
-	case "chat.download.audio":
-		httpMethod = "POST"
-		httpPath = "/chat/downloadaudio"
-	case "chat.download.document":
-		httpMethod = "POST"
-		httpPath = "/chat/downloaddocument"
-	case "chat.history":
-		httpMethod = "GET"
-		chatJID, ok := req.Params["chat_jid"].(string)
-		if !ok || chatJID == "" {
-			ss.sendError(req.ID, 400, "missing or invalid chat_jid parameter")
-			return
-		}
-		httpPath = "/chat/history?chat_jid=" + chatJID
-		// Add optional limit parameter
-		if limit, ok := req.Params["limit"].(float64); ok {
-			httpPath += fmt.Sprintf("&limit=%d", int(limit))
-		}
 
 	// User info
 	case "user.contacts":

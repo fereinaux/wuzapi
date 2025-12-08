@@ -84,7 +84,6 @@ func (s *server) routes() {
 	s.router.Handle("/session/status", c.Then(s.GetStatus())).Methods("GET")
 	s.router.Handle("/session/qr", c.Then(s.GetQR())).Methods("GET")
 	s.router.Handle("/session/pairphone", c.Then(s.PairPhone())).Methods("POST")
-	s.router.Handle("/session/history", c.Then(s.RequestHistorySync())).Methods("GET")
 
 	s.router.Handle("/webhook", c.Then(s.SetWebhook())).Methods("POST")
 	s.router.Handle("/webhook", c.Then(s.GetWebhook())).Methods("GET")
@@ -92,7 +91,6 @@ func (s *server) routes() {
 	s.router.Handle("/webhook", c.Then(s.UpdateWebhook())).Methods("PUT")
 
 	s.router.Handle("/session/proxy", c.Then(s.SetProxy())).Methods("POST")
-	s.router.Handle("/session/history", c.Then(s.SetHistory())).Methods("POST")
 
 	s.router.Handle("/session/s3/config", c.Then(s.ConfigureS3())).Methods("POST")
 	s.router.Handle("/session/s3/config", c.Then(s.GetS3Config())).Methods("GET")
@@ -118,7 +116,6 @@ func (s *server) routes() {
 	s.router.Handle("/chat/send/list", c.Then(s.SendList())).Methods("POST")
 	s.router.Handle("/chat/send/poll", c.Then(s.SendPoll())).Methods("POST")
 	s.router.Handle("/chat/send/edit", c.Then(s.SendEditMessage())).Methods("POST")
-	s.router.Handle("/chat/history", c.Then(s.GetHistory())).Methods("GET")
 	s.router.Handle("/chat/request-unavailable-message", c.Then(s.RequestUnavailableMessage())).Methods("POST")
 	s.router.Handle("/chat/archive", c.Then(s.ArchiveChat())).Methods("POST")
 
@@ -135,11 +132,6 @@ func (s *server) routes() {
 
 	s.router.Handle("/chat/presence", c.Then(s.ChatPresence())).Methods("POST")
 	s.router.Handle("/chat/markread", c.Then(s.MarkRead())).Methods("POST")
-	s.router.Handle("/chat/downloadimage", c.Then(s.DownloadImage())).Methods("POST")
-	s.router.Handle("/chat/downloadvideo", c.Then(s.DownloadVideo())).Methods("POST")
-	s.router.Handle("/chat/downloadaudio", c.Then(s.DownloadAudio())).Methods("POST")
-	s.router.Handle("/chat/downloaddocument", c.Then(s.DownloadDocument())).Methods("POST")
-	s.router.Handle("/chat/downloadsticker", c.Then(s.DownloadSticker())).Methods("POST")
 
 	s.router.Handle("/group/create", c.Then(s.CreateGroup())).Methods("POST")
 	s.router.Handle("/group/list", c.Then(s.ListGroups())).Methods("GET")

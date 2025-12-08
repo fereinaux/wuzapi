@@ -2,12 +2,8 @@ package main
 
 // List of supported event types
 var supportedEventTypes = []string{
-	// Messages and Communication
-	"Message",
-	"UndecryptableMessage",
-	"Receipt",
+	// Media Retry
 	"MediaRetry",
-	"ReadReceipt",
 
 	// Groups and Contacts
 	"GroupInfo",
@@ -41,7 +37,6 @@ var supportedEventTypes = []string{
 	// Synchronization and State
 	"AppState",
 	"AppStateSyncComplete",
-	"HistorySync",
 	"OfflineSyncCompleted",
 	"OfflineSyncPreview",
 
@@ -53,7 +48,6 @@ var supportedEventTypes = []string{
 	"CallRelayLatency",
 
 	// Presence and Activity
-	"Presence",
 	"ChatPresence",
 
 	// Identity
@@ -67,9 +61,6 @@ var supportedEventTypes = []string{
 	"NewsletterLeave",
 	"NewsletterMuteChange",
 	"NewsletterLiveUpdate",
-
-	// Facebook/Meta Bridge
-	"FBMessage",
 
 	// Special - receives all events
 	"All",
