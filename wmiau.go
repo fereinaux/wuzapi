@@ -708,6 +708,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	case *events.StreamReplaced:
 		log.Info().Msg("Received StreamReplaced event")
 		return
+	case *events.Message:
+		// Message events removed - only sending functionality is supported
+		return
 	case *events.Receipt:
 		// Receipt events removed - only sending functionality is supported
 		return
