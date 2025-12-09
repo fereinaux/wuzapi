@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4717,16 +4716,6 @@ func (s *server) RejectCall() http.HandlerFunc {
 
 		decoder := json.NewDecoder(r.Body)
 		var t rejectCallStruct
-		err := decoder.Decode(&t)
-		if err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
-			return
-		}
-
-		if t.CallFrom == "" {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("missing call_from in Payload"))
-			return
-		}
 		err := decoder.Decode(&t)
 		if err != nil {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))

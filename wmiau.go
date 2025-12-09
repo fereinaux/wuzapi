@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -179,24 +178,26 @@ func (s *server) connectOnStartup() {
 				}
 
 				if s3Config.Enabled {
-					config := &S3Config{
-						Enabled:       s3Config.Enabled,
-						Endpoint:      s3Config.Endpoint,
-						Region:        s3Config.Region,
-						Bucket:        s3Config.Bucket,
-						AccessKey:     s3Config.AccessKey,
-						SecretKey:     s3Config.SecretKey,
-						PathStyle:     s3Config.PathStyle,
-						PublicURL:     s3Config.PublicURL,
-						RetentionDays: s3Config.RetentionDays,
-					}
+					// S3 initialization removed - GetS3Manager() not implemented
+					// config := &S3Config{
+					// 	Enabled:       s3Config.Enabled,
+					// 	Endpoint:      s3Config.Endpoint,
+					// 	Region:        s3Config.Region,
+					// 	Bucket:        s3Config.Bucket,
+					// 	AccessKey:     s3Config.AccessKey,
+					// 	SecretKey:     s3Config.SecretKey,
+					// 	PathStyle:     s3Config.PathStyle,
+					// 	PublicURL:     s3Config.PublicURL,
+					// 	RetentionDays: s3Config.RetentionDays,
+					// }
 
-					err = GetS3Manager().InitializeS3Client(userID, config)
-					if err != nil {
-						log.Error().Err(err).Str("userID", userID).Msg("Failed to initialize S3 client on startup")
-					} else {
-						log.Info().Str("userID", userID).Msg("S3 client initialized on startup")
-					}
+					// err = GetS3Manager().InitializeS3Client(userID, config)
+					// if err != nil {
+					// 	log.Error().Err(err).Str("userID", userID).Msg("Failed to initialize S3 client on startup")
+					// } else {
+					// 	log.Info().Str("userID", userID).Msg("S3 client initialized on startup")
+					// }
+					log.Warn().Str("userID", userID).Msg("S3 enabled but initialization not implemented")
 				}
 			}(txtid)
 		}
@@ -511,8 +512,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	txtid := mycli.userID
 	postmap := make(map[string]interface{})
 	postmap["event"] = rawEvt
-	dowebhook := 0
-	path := ""
 
 	switch evt := rawEvt.(type) {
 	case *events.AppStateSyncComplete:
@@ -526,7 +525,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 	case *events.Connected, *events.PushNameSetting:
 		postmap["type"] = "Connected"
-		dowebhook = 1
 		if len(mycli.WAClient.Store.PushName) == 0 {
 			break
 		}
@@ -555,7 +553,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 
 		postmap["type"] = "PairSuccess"
-		dowebhook = 1
 
 		myuserinfo, found := userinfocache.Get(mycli.token)
 		if !found {
@@ -587,7 +584,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		log.Info().Str("index", fmt.Sprintf("%+v", evt.Index)).Str("actionValue", fmt.Sprintf("%+v", evt.SyncActionValue)).Msg("App state event received")
 	case *events.LoggedOut:
 		postmap["type"] = "LoggedOut"
-		dowebhook = 1
 		log.Info().Str("reason", evt.Reason.String()).Msg("Logged out")
 		defer func() {
 			// Use a non-blocking send to prevent a deadlock if the receiver has already terminated.
@@ -603,127 +599,96 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 	case *events.ChatPresence:
 		postmap["type"] = "ChatPresence"
-		dowebhook = 1
 		log.Info().Str("state", fmt.Sprintf("%s", evt.State)).Str("media", fmt.Sprintf("%s", evt.Media)).Str("chat", evt.MessageSource.Chat.String()).Str("sender", evt.MessageSource.Sender.String()).Msg("Chat Presence received")
 	case *events.CallOffer:
 		postmap["type"] = "CallOffer"
-		dowebhook = 1
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call offer")
 	case *events.CallAccept:
 		postmap["type"] = "CallAccept"
-		dowebhook = 1
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call accept")
 	case *events.CallTerminate:
 		postmap["type"] = "CallTerminate"
-		dowebhook = 1
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call terminate")
 	case *events.CallOfferNotice:
 		postmap["type"] = "CallOfferNotice"
-		dowebhook = 1
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call offer notice")
 	case *events.CallRelayLatency:
 		postmap["type"] = "CallRelayLatency"
-		dowebhook = 1
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call relay latency")
 	case *events.Disconnected:
 		postmap["type"] = "Disconnected"
-		dowebhook = 1
 		log.Info().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Disconnected from Whatsapp")
 	case *events.ConnectFailure:
 		postmap["type"] = "ConnectFailure"
-		dowebhook = 1
 		log.Error().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Failed to connect to Whatsapp")
 	case *events.UndecryptableMessage:
 		postmap["type"] = "UndecryptableMessage"
-		dowebhook = 1
 		log.Warn().Str("info", evt.Info.SourceString()).Msg("Undecryptable message received")
 	case *events.MediaRetry:
 		postmap["type"] = "MediaRetry"
-		dowebhook = 1
 		log.Info().Str("messageID", evt.MessageID).Msg("Media retry event")
 	case *events.GroupInfo:
 		postmap["type"] = "GroupInfo"
-		dowebhook = 1
 		log.Info().Str("jid", evt.JID.String()).Msg("Group info updated")
 	case *events.JoinedGroup:
 		postmap["type"] = "JoinedGroup"
-		dowebhook = 1
 		log.Info().Str("jid", evt.JID.String()).Msg("Joined group")
 	case *events.Picture:
 		postmap["type"] = "Picture"
-		dowebhook = 1
 		log.Info().Str("jid", evt.JID.String()).Msg("Picture updated")
 	case *events.BlocklistChange:
 		postmap["type"] = "BlocklistChange"
-		dowebhook = 1
 		log.Info().Str("jid", evt.JID.String()).Msg("Blocklist changed")
 	case *events.Blocklist:
 		postmap["type"] = "Blocklist"
-		dowebhook = 1
 		log.Info().Msg("Blocklist received")
 	case *events.KeepAliveRestored:
 		postmap["type"] = "KeepAliveRestored"
-		dowebhook = 1
 		log.Info().Msg("Keep alive restored")
 	case *events.KeepAliveTimeout:
 		postmap["type"] = "KeepAliveTimeout"
-		dowebhook = 1
 		log.Warn().Msg("Keep alive timeout")
 	case *events.ClientOutdated:
 		postmap["type"] = "ClientOutdated"
-		dowebhook = 1
 		log.Warn().Msg("Client outdated")
 	case *events.TemporaryBan:
 		postmap["type"] = "TemporaryBan"
-		dowebhook = 1
 		log.Info().Msg("Temporary ban")
 	case *events.StreamError:
 		postmap["type"] = "StreamError"
-		dowebhook = 1
 		log.Error().Str("code", evt.Code).Msg("Stream error")
 	case *events.PairError:
 		postmap["type"] = "PairError"
-		dowebhook = 1
 		log.Error().Msg("Pair error")
 	case *events.PrivacySettings:
 		postmap["type"] = "PrivacySettings"
-		dowebhook = 1
 		log.Info().Msg("Privacy settings updated")
 	case *events.UserAbout:
 		postmap["type"] = "UserAbout"
-		dowebhook = 1
 		log.Info().Str("jid", evt.JID.String()).Msg("User about updated")
 	case *events.OfflineSyncCompleted:
 		postmap["type"] = "OfflineSyncCompleted"
-		dowebhook = 1
 		log.Info().Msg("Offline sync completed")
 	case *events.OfflineSyncPreview:
 		postmap["type"] = "OfflineSyncPreview"
-		dowebhook = 1
 		log.Info().Msg("Offline sync preview")
 	case *events.IdentityChange:
 		postmap["type"] = "IdentityChange"
-		dowebhook = 1
 		log.Info().Str("jid", evt.JID.String()).Msg("Identity changed")
 	case *events.NewsletterJoin:
 		postmap["type"] = "NewsletterJoin"
-		dowebhook = 1
 		log.Info().Str("jid", evt.ID.String()).Msg("Newsletter joined")
 	case *events.NewsletterLeave:
 		postmap["type"] = "NewsletterLeave"
-		dowebhook = 1
 		log.Info().Str("jid", evt.ID.String()).Msg("Newsletter left")
 	case *events.NewsletterMuteChange:
 		postmap["type"] = "NewsletterMuteChange"
-		dowebhook = 1
 		log.Info().Str("jid", evt.ID.String()).Msg("Newsletter mute changed")
 	case *events.NewsletterLiveUpdate:
 		postmap["type"] = "NewsletterLiveUpdate"
-		dowebhook = 1
 		log.Info().Msg("Newsletter live update")
 	case *events.FBMessage:
 		postmap["type"] = "FBMessage"
-		dowebhook = 1
 		log.Info().Str("info", evt.Info.SourceString()).Msg("Facebook message received")
 	default:
 		log.Warn().Str("event", fmt.Sprintf("%+v", evt)).Msg("Unhandled event")

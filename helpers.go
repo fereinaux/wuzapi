@@ -15,14 +15,8 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strings"
-	"time"
 
-	"github.com/go-resty/resty/v2"
-	"github.com/jmoiron/sqlx"
-	"github.com/patrickmn/go-cache"
 	"github.com/rs/zerolog/log"
-	"github.com/vincent-petithory/dataurl"
 )
 
 var (
