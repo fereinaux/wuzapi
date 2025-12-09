@@ -56,18 +56,9 @@ var (
 	sslprivkey          = flag.String("sslprivatekey", "", "SSL Certificate Private Key File")
 	adminToken          = flag.String("admintoken", "", "Security Token to authorize admin actions (list/create/remove users)")
 	globalEncryptionKey = flag.String("globalencryptionkey", "", "Encryption key for sensitive data (32 bytes)")
-	globalHMACKey       = flag.String("globalhmackey", "", "Global HMAC key for webhook signing")
-	globalWebhook       = flag.String("globalwebhook", "", "Global webhook URL to receive all events from all users")
 	versionFlag         = flag.Bool("version", false, "Display version information and exit")
 	mode                = flag.String("mode", "http", "Server mode: http or stdio")
 	dataDir             = flag.String("datadir", "", "Data directory for database and session files (defaults to executable directory)")
-
-	globalHMACKeyEncrypted []byte
-
-	webhookRetryEnabled      = flag.Bool("webhookretry", true, "Enable webhook retry mechanism")
-	webhookRetryCount        = flag.Int("retrycount", 5, "Number of times to retry failed webhooks")
-	webhookRetryDelaySeconds = flag.Int("retrydelay", 30, "Delay in seconds between webhook retries")
-	webhookErrorQueueName    = flag.String("errorqueue", "webhook_errors", "RabbitMQ queue name for failed webhooks")
 
 	container        *sqlstore.Container
 	clientManager    = NewClientManager()
@@ -82,64 +73,70 @@ var privateIPBlocks []*net.IPNet
 const version = "1.0.5"
 
 func newSafeHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 60 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				host, port, err := net.SplitHostPort(addr)
-				if err != nil {
-					return nil, fmt.Errorf("unexpected address format from http transport: %q: %w", addr, err)
-				}
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableKeepAlives:   false,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("unexpected address format from http transport: %q: %w", addr, err)
+			}
 
-				ips, err := net.LookupIP(host)
-				if err != nil {
-					return nil, fmt.Errorf("failed to resolve host '%s': %w", host, err)
-				}
-				if len(ips) == 0 {
-					return nil, fmt.Errorf("no IP addresses found for host: %s", host)
-				}
+			ips, err := net.LookupIP(host)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve host '%s': %w", host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("no IP addresses found for host: %s", host)
+			}
 
-				var (
-					lastDialErr   error
-					ssrfDetected  bool
-					ssrfLastError error
-				)
+			var (
+				lastDialErr   error
+				ssrfDetected  bool
+				ssrfLastError error
+			)
 
-				for _, ip := range ips {
-					if isPrivateOrLoopback(ip) {
-						log.Warn().Str("ip", ip.String()).Str("host", host).Msg("SSRF attempt detected: refused to connect to private or local address")
-						ssrfDetected = true
-						if ssrfLastError == nil {
-							ssrfLastError = fmt.Errorf("ssrf attempt detected: host '%s' resolves to one or more private IP addresses", host)
-						}
-						continue
+			for _, ip := range ips {
+				if isPrivateOrLoopback(ip) {
+					log.Warn().Str("ip", ip.String()).Str("host", host).Msg("SSRF attempt detected: refused to connect to private or local address")
+					ssrfDetected = true
+					if ssrfLastError == nil {
+						ssrfLastError = fmt.Errorf("ssrf attempt detected: host '%s' resolves to one or more private IP addresses", host)
 					}
-
-					dialer := &net.Dialer{
-						Timeout:   4 * time.Second,
-						KeepAlive: 30 * time.Second,
-					}
-
-					connAddr := net.JoinHostPort(ip.String(), port)
-					conn, err := dialer.DialContext(ctx, network, connAddr)
-					if err == nil {
-						return conn, nil
-					}
-					lastDialErr = err
+					continue
 				}
 
-				if lastDialErr != nil {
-					return nil, lastDialErr
+				dialer := &net.Dialer{
+					Timeout:   4 * time.Second,
+					KeepAlive: 30 * time.Second,
 				}
-				if ssrfDetected {
-					return nil, ssrfLastError
+
+				connAddr := net.JoinHostPort(ip.String(), port)
+				conn, err := dialer.DialContext(ctx, network, connAddr)
+				if err == nil {
+					return conn, nil
 				}
-				if lastDialErr != nil {
-					return nil, lastDialErr
-				}
-				return nil, fmt.Errorf("no dialable IP addresses found for host %s", host)
-			},
+				lastDialErr = err
+			}
+
+			if lastDialErr != nil {
+				return nil, lastDialErr
+			}
+			if ssrfDetected {
+				return nil, ssrfLastError
+			}
+			if lastDialErr != nil {
+				return nil, lastDialErr
+			}
+			return nil, fmt.Errorf("no dialable IP addresses found for host %s", host)
 		},
+	}
+
+	return &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: transport,
 	}
 }
 
@@ -180,29 +177,7 @@ func main() {
 
 	flag.Parse()
 
-	if v := os.Getenv("WEBHOOK_RETRY_ENABLED"); v != "" {
-		*webhookRetryEnabled = strings.ToLower(v) == "true" || v == "1"
-	}
-	if v := os.Getenv("WEBHOOK_RETRY_COUNT"); v != "" {
-		if count, err := strconv.Atoi(v); err == nil {
-			*webhookRetryCount = count
-		}
-	}
-	if v := os.Getenv("WEBHOOK_RETRY_DELAY_SECONDS"); v != "" {
-		if delay, err := strconv.Atoi(v); err == nil {
-			*webhookRetryDelaySeconds = delay
-		}
-	}
-	if v := os.Getenv("WEBHOOK_ERROR_QUEUE_NAME"); v != "" {
-		*webhookErrorQueueName = v
-	}
-
-	log.Info().
-		Bool("enabled", *webhookRetryEnabled).
-		Int("count", *webhookRetryCount).
-		Int("delay", *webhookRetryDelaySeconds).
-		Str("queue", *webhookErrorQueueName).
-		Msg("Webhook Retry Configured")
+	// Webhook and RabbitMQ support removed - no longer supported
 
 	// Novo bloco para sobrescrever o osName pelo ENV, se existir
 	if v := os.Getenv("SESSION_DEVICE_NAME"); v != "" {
@@ -303,44 +278,9 @@ func main() {
 		}
 	}
 
-	// Check for global webhook in environment variable
-	if *globalWebhook == "" {
-		if v := os.Getenv("WUZAPI_GLOBAL_WEBHOOK"); v != "" {
-			*globalWebhook = v
-			log.Info().Str("global_webhook", v).Msg("Global webhook configured from environment variable")
-		}
-	} else {
-		log.Info().Str("global_webhook", *globalWebhook).Msg("Global webhook configured from command line")
-	}
+	// Webhook and HMAC support removed - no longer supported
 
-	// Check for global HMAC key in environment variable
-	if *globalHMACKey == "" {
-		if v := os.Getenv("WUZAPI_GLOBAL_HMAC_KEY"); v != "" {
-			*globalHMACKey = v
-			log.Info().Msg("Global HMAC key configured from environment variable")
-		} else {
-			// Generate a random key if none provided
-			const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-			b := make([]byte, 32)
-			for i := range b {
-				b[i] = charset[rand.Intn(len(charset))]
-			}
-			*globalHMACKey = string(b)
-			log.Warn().Str("global_hmac_key", *globalHMACKey).Msg("No WUZAPI_GLOBAL_HMAC_KEY provided, generated a random one")
-		}
-
-	} else {
-		log.Info().Msg("Global HMAC key configured from command line")
-	}
-
-	globalHMACKeyEncrypted, err = encryptHMACKey(*globalHMACKey)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to encrypt global HMAC key")
-	} else {
-		log.Info().Msg("Global HMAC key encrypted successfully")
-	}
-
-	InitRabbitMQ()
+	// RabbitMQ support removed - no longer supported
 
 	ex, err := os.Executable()
 	if err != nil {
@@ -409,6 +349,30 @@ func main() {
 	s.routes()
 
 	s.connectOnStartup()
+
+	// Start session cleanup goroutine to unload inactive sessions from memory
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute) // Check every 30 minutes
+		defer ticker.Stop()
+		
+		// Default: unload sessions inactive for 2 hours
+		inactiveDuration := 2 * time.Hour
+		if envDuration := os.Getenv("SESSION_INACTIVE_TIMEOUT"); envDuration != "" {
+			if parsed, err := time.ParseDuration(envDuration); err == nil {
+				inactiveDuration = parsed
+			}
+		}
+		
+		log.Info().Dur("inactive_duration", inactiveDuration).Msg("Session cleanup goroutine started")
+		
+		for {
+			<-ticker.C
+			unloaded := clientManager.UnloadInactiveSessions(inactiveDuration)
+			if len(unloaded) > 0 {
+				log.Info().Strs("sessions", unloaded).Msg("Unloaded inactive sessions from memory")
+			}
+		}
+	}()
 
 	if serverMode == Stdio {
 		startStdioMode(s)

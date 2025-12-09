@@ -380,6 +380,43 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     }).modal('show');
   });
+
+  $('#restartButton').click(function() {
+    const admintoken = getLocalStorageItem('admintoken');
+    if (!admintoken) {
+      alert('Admin token not found. Please login as admin.');
+      return;
+    }
+
+    if (!confirm('Are you sure you want to restart the application? This will disconnect all active sessions temporarily.')) {
+      return;
+    }
+
+    const myHeaders = new Headers();
+    myHeaders.append('authorization', admintoken);
+    myHeaders.append('Content-Type', 'application/json');
+
+    fetch('/admin/restart', {
+      method: 'POST',
+      headers: myHeaders
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        alert('Application restart initiated. The application will restart shortly. Please wait a few seconds and refresh the page.');
+        // Optionally reload the page after a delay
+        setTimeout(function() {
+          window.location.reload();
+        }, 5000);
+      } else {
+        alert('Failed to restart application: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(error => {
+      console.error('Error restarting application:', error);
+      alert('Error restarting application. Please check the console for details.');
+    });
+  });
   
   $('#addInstanceForm').form({
     fields: {

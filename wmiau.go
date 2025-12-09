@@ -40,68 +40,6 @@ type MyClient struct {
 	s              *server
 }
 
-func sendToGlobalWebHook(jsonData []byte, token string, userID string) {
-	jsonDataStr := string(jsonData)
-
-	instance_name := ""
-	userinfo, found := userinfocache.Get(token)
-	if found {
-		instance_name = userinfo.(Values).Get("Name")
-	}
-
-	if *globalWebhook != "" {
-		log.Info().Str("url", *globalWebhook).Msg("Calling global webhook")
-		// Add extra information for the global webhook
-		globalData := map[string]string{
-			"jsonData":     jsonDataStr,
-			"userID":       userID,
-			"instanceName": instance_name,
-		}
-		callHookWithHmac(*globalWebhook, globalData, userID, globalHMACKeyEncrypted)
-	}
-}
-
-func sendToUserWebHook(webhookurl string, path string, jsonData []byte, userID string, token string) {
-	sendToUserWebHookWithHmac(webhookurl, path, jsonData, userID, token, nil)
-}
-
-func sendToUserWebHookWithHmac(webhookurl string, path string, jsonData []byte, userID string, token string, encryptedHmacKey []byte) {
-
-	instance_name := ""
-	userinfo, found := userinfocache.Get(token)
-	if found {
-		instance_name = userinfo.(Values).Get("Name")
-	}
-	data := map[string]string{
-		"jsonData":     string(jsonData),
-		"userID":       userID,
-		"instanceName": instance_name,
-	}
-
-	log.Debug().Interface("webhookData", data).Msg("Data being sent to webhook")
-
-	if webhookurl != "" {
-		log.Info().Str("url", webhookurl).Msg("Calling user webhook")
-
-		if path == "" {
-			go callHookWithHmac(webhookurl, data, userID, encryptedHmacKey)
-		} else {
-			// Create a channel to capture the error from the goroutine
-			errChan := make(chan error, 1)
-			go func() {
-				err := callHookFileWithHmac(webhookurl, data, userID, path, encryptedHmacKey)
-				errChan <- err
-			}()
-
-			// Optionally handle the error from the channel (if needed)
-			if err := <-errChan; err != nil {
-				log.Error().Err(err).Msg("Error calling hook file")
-			}
-		}
-	} else {
-		log.Warn().Str("userid", userID).Msg("No webhook set for user")
-	}
-}
 
 func updateAndGetUserSubscriptions(mycli *MyClient) ([]string, error) {
 	// Get updated events from cache/database
@@ -137,89 +75,14 @@ func updateAndGetUserSubscriptions(mycli *MyClient) ([]string, error) {
 	return subscribedEvents, nil
 }
 
-func getUserWebhookUrl(token string) string {
-	webhookurl := ""
-	myuserinfo, found := userinfocache.Get(token)
-	if !found {
-		log.Warn().Str("token", token).Msg("Could not call webhook as there is no user for this token")
-	} else {
-		webhookurl = myuserinfo.(Values).Get("Webhook")
-	}
-	return webhookurl
-}
-
-func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path string) {
-	webhookurl := getUserWebhookUrl(mycli.token)
-
-	// Get updated events from cache/database
-	subscribedEvents, err := updateAndGetUserSubscriptions(mycli)
-	if err != nil {
-		return
-	}
-
-	eventType, ok := postmap["type"].(string)
-	if !ok {
-		log.Error().Msg("Event type is not a string in postmap")
-		return
-	}
-
-	// Log subscription details for debugging
-	log.Debug().
-		Str("userID", mycli.userID).
-		Str("eventType", eventType).
-		Strs("subscribedEvents", subscribedEvents).
-		Msg("Checking event subscription")
-
-	// Check if the current event is in the subscriptions
-	checkIfSubscribedInEvent := checkIfSubscribedToEvent(subscribedEvents, postmap["type"].(string), mycli.userID)
-	if !checkIfSubscribedInEvent {
-		return
-	}
-
-	// In stdio mode, send as JSON-RPC notification instead of HTTP webhook
+// In stdio mode, send as JSON-RPC notification
+func sendEventStdio(mycli *MyClient, postmap map[string]interface{}) {
 	if mycli.s != nil && mycli.s.mode == Stdio {
-		mycli.s.SendNotification(eventType, postmap)
-		return
-	}
-
-	// Prepare webhook data
-	jsonData, err := json.Marshal(postmap)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal postmap to JSON")
-		return
-	}
-
-	// Get HMAC key for this user
-	var encryptedHmacKey []byte
-	if userinfo, found := userinfocache.Get(mycli.token); found {
-		encryptedB64 := userinfo.(Values).Get("HmacKeyEncrypted")
-		if encryptedB64 != "" {
-			var err error
-			encryptedHmacKey, err = base64.StdEncoding.DecodeString(encryptedB64)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to decode HMAC key from cache")
-			}
+		eventType, ok := postmap["type"].(string)
+		if ok {
+			mycli.s.SendNotification(eventType, postmap)
 		}
 	}
-
-	sendToUserWebHookWithHmac(webhookurl, path, jsonData, mycli.userID, mycli.token, encryptedHmacKey)
-
-	// Get global webhook if configured
-	go sendToGlobalWebHook(jsonData, mycli.token, mycli.userID)
-
-	go sendToGlobalRabbit(jsonData, mycli.token, mycli.userID)
-}
-
-func checkIfSubscribedToEvent(subscribedEvents []string, eventType string, userId string) bool {
-	if !Find(subscribedEvents, eventType) && !Find(subscribedEvents, "All") {
-		log.Warn().
-			Str("type", eventType).
-			Strs("subscribedEvents", subscribedEvents).
-			Str("userID", userId).
-			Msg("Skipping webhook. Not subscribed for this type")
-		return false
-	}
-	return true
 }
 
 // Connects to Whatsapp Websocket on server startup if last state was connected
@@ -505,7 +368,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 					postmap["qrCodeBase64"] = base64qrcode
 					postmap["type"] = "QR"
 
-					sendEventWithWebHook(&mycli, postmap, "")
+					sendEventStdio(&mycli, postmap)
 
 				} else if evt.Event == "timeout" {
 					// Clear QR code from DB on timeout
@@ -513,7 +376,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 					postmap := make(map[string]interface{})
 					postmap["event"] = evt.Event
 					postmap["type"] = "QRTimeout"
-					sendEventWithWebHook(&mycli, postmap, "")
+					sendEventStdio(&mycli, postmap)
 
 					sqlStmt := `UPDATE users SET qrcode='' WHERE id=$1`
 					_, err := s.db.Exec(sqlStmt, userID)
@@ -607,7 +470,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 			postmap["type"] = "ConnectFailure"
 			postmap["attempts"] = maxConnectionRetries
 			postmap["reason"] = "Failed to connect after retry attempts"
-			sendEventWithWebHook(&mycli, postmap, "")
+			sendEventStdio(&mycli, postmap)
 
 			return
 		}
@@ -866,7 +729,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		log.Warn().Str("event", fmt.Sprintf("%+v", evt)).Msg("Unhandled event")
 	}
 
-	if dowebhook == 1 {
-		sendEventWithWebHook(mycli, postmap, path)
-	}
+	// Webhooks removed - only stdio mode notifications
+	sendEventStdio(mycli, postmap)
 }
