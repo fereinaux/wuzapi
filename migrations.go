@@ -55,6 +55,16 @@ var migrations = []Migration{
 		Name:  "add_hmac_key",
 		UpSQL: addHmacKeySQL,
 	},
+	{
+		ID:    8,
+		Name:  "add_data_json",
+		UpSQL: addDataJsonSQL,
+	},
+	{
+		ID:    9,
+		Name:  "add_whatsmeow_message_secrets_message_id_idx",
+		UpSQL: addWhatsmeowMessageSecretsMessageIDIndexSQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -146,6 +156,33 @@ BEGIN
         ALTER TABLE users ADD COLUMN s3_retention_days INTEGER DEFAULT 30;
     END IF;
 END $$;
+`
+
+const addDataJsonSQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'message_history') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'message_history' AND column_name = 'datajson'
+        ) THEN
+            ALTER TABLE message_history ADD COLUMN datajson TEXT;
+        END IF;
+    END IF;
+END $$;
+
+-- SQLite version (handled in code)
+`
+
+const addWhatsmeowMessageSecretsMessageIDIndexSQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+	CREATE INDEX IF NOT EXISTS whatsmeow_message_secrets_message_id_idx
+	ON whatsmeow_message_secrets (message_id);
+END $$;
+-- SQLite version (handled in code)
 `
 
 // GenerateRandomID creates a random string ID
@@ -323,6 +360,22 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 		if db.DriverName() == "sqlite" {
 			// Add hmac_key column as BLOB for encrypted data in SQLite
 			err = addColumnIfNotExistsSQLite(tx, "users", "hmac_key", "BLOB")
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 8 {
+		if db.DriverName() == "sqlite" {
+			var cnt int
+			err = tx.Get(&cnt, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='message_history'`)
+			if err == nil && cnt > 0 {
+				err = addColumnIfNotExistsSQLite(tx, "message_history", "datajson", "TEXT")
+			}
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 9 {
+		if db.DriverName() == "sqlite" {
+			err = nil
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}

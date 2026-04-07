@@ -19,6 +19,14 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const (
+	fetchImageMaxBytes     = 16 * 1024 * 1024  // 16MB
+	fetchVideoMaxBytes     = 100 * 1024 * 1024 // 100MB
+	fetchAudioMaxBytes     = 16 * 1024 * 1024  // 16MB
+	fetchDocumentMaxBytes  = 100 * 1024 * 1024 // 100MB
+	openGraphImageMaxBytes = 10 * 1024 * 1024  // header image fetch (SendButtons etc.)
+)
+
 var (
 	urlRegex = regexp.MustCompile(`https?://[^\s"']*[^\"'\s\.,!?()[\]{}]`)
 )
@@ -56,6 +64,7 @@ func isHTTPURL(input string) bool {
 	}
 	return parsed.Host != ""
 }
+
 func fetchURLBytes(ctx context.Context, resourceURL string, limit int64) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", resourceURL, nil)
 	if err != nil {

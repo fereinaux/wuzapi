@@ -50,6 +50,7 @@ var (
 	logType             = flag.String("logtype", "console", "Type of log output (console or json)")
 	skipMedia           = flag.Bool("skipmedia", false, "Do not attempt to download media in messages")
 	osName              = flag.String("osname", "Mac OS 10", "Connection OSName in Whatsapp")
+	platformType        = flag.String("platformtype", "DESKTOP", "Device platform type (DESKTOP, IPAD, ANDROID_TABLET, IOS_PHONE, ANDROID_PHONE, etc.)")
 	colorOutput         = flag.Bool("color", false, "Enable colored output for console logs")
 	sslcert             = flag.String("sslcertificate", "", "SSL Certificate File")
 	sslprivkey          = flag.String("sslprivatekey", "", "SSL Certificate Private Key File")
@@ -69,7 +70,7 @@ var (
 
 var privateIPBlocks []*net.IPNet
 
-const version = "1.0.5"
+const version = "1.0.6"
 
 func newSafeHTTPClient() *http.Client {
 	transport := &http.Transport{
@@ -178,9 +179,28 @@ func main() {
 
 	// Webhook and RabbitMQ support removed - no longer supported
 
+	if *address == "0.0.0.0" || *address == "" {
+		if v := os.Getenv("WUZAPI_ADDRESS"); v != "" {
+			*address = v
+			log.Info().Str("address", v).Msg("Address configured from environment variable")
+		}
+	}
+
+	if *port == "8080" || *port == "" {
+		if v := os.Getenv("WUZAPI_PORT"); v != "" {
+			*port = v
+			log.Info().Str("port", v).Msg("Port configured from environment variable")
+		}
+	}
+
 	// Novo bloco para sobrescrever o osName pelo ENV, se existir
 	if v := os.Getenv("SESSION_DEVICE_NAME"); v != "" {
 		*osName = v
+	}
+
+	// Override platformType from environment variable if set
+	if v := os.Getenv("SESSION_PLATFORM_TYPE"); v != "" {
+		*platformType = v
 	}
 
 	if *versionFlag {
@@ -300,16 +320,6 @@ func main() {
 		}
 	}()
 
-	// Initialize the schema
-	if err = initializeSchema(db); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize schema")
-		// Perform cleanup before exiting
-		if err := db.Close(); err != nil {
-			log.Error().Err(err).Msg("Failed to close database connection during cleanup")
-		}
-		os.Exit(1)
-	}
-
 	var dbLog waLog.Logger
 	if *waDebug != "" {
 		dbLog = waLog.Stdout("Database", *waDebug, *colorOutput)
@@ -325,12 +335,22 @@ func main() {
 		)
 		container, err = sqlstore.New(context.Background(), "postgres", storeConnStr, dbLog)
 	} else {
-		storeConnStr = "file:" + filepath.Join(config.Path, "main.db") + "?_pragma=foreign_keys(1)&_busy_timeout=3000"
+		storeConnStr = "file:" + filepath.ToSlash(filepath.Join(config.Path, "main.db")) + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_timeout=10000"
 		container, err = sqlstore.New(context.Background(), "sqlite", storeConnStr, dbLog)
 	}
 
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error creating sqlstore")
+		os.Exit(1)
+	}
+
+	// Initialize the schema
+	if err = initializeSchema(db); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize schema")
+		// Perform cleanup before exiting
+		if err := db.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close database connection during cleanup")
+		}
 		os.Exit(1)
 	}
 
