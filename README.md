@@ -136,7 +136,6 @@ WUZAPI_GLOBAL_HMAC_KEY=your_global_hmac_key_here
 TZ=America/New_York
 WEBHOOK_FORMAT=json
 SESSION_DEVICE_NAME=WuzAPI
-WUZAPI_PORT=8080
 WUZAPI_GLOBAL_WEBHOOK=https://your-global-webhook.url
 WEBHOOK_RETRY_ENABLED=true
 WEBHOOK_RETRY_COUNT=2
@@ -176,7 +175,6 @@ No database configuration needed - SQLite is used by default if no PostgreSQL se
 TZ=America/New_York
 WEBHOOK_FORMAT=json # or "form" for the default
 SESSION_DEVICE_NAME=WuzAPI
-WUZAPI_PORT=8080 # Port for the WuzAPI server
 WUZAPI_GLOBAL_WEBHOOK= # Global webhook URL for all instances
 ```
 
@@ -228,8 +226,8 @@ The Docker configuration will:
 
 **Key differences for Docker deployment:**
 - Set `DB_HOST=db` instead of `localhost` to connect to the PostgreSQL container
-- The `WUZAPI_PORT` variable controls the external port mapping in `docker-compose.yml`
-- In swarm mode, `WUZAPI_PORT` configures the Traefik load balancer port
+- The `WUZAPI_PORT` variable controls only the **host** side of `docker-compose.yml` port mapping (`${WUZAPI_PORT:-8080}:8080`); the process always listens on **8080** inside the container unless you pass `-port` in the command
+- In Swarm, Traefik’s `loadbalancer.server.port` must be that **container** listen port (8080 by default), not the public host port
 
 **Note:** The `.env` file is already included in `.gitignore` to avoid committing sensitive information to your repository.
 

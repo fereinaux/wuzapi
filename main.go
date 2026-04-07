@@ -186,12 +186,9 @@ func main() {
 		}
 	}
 
-	if *port == "8080" || *port == "" {
-		if v := os.Getenv("WUZAPI_PORT"); v != "" {
-			*port = v
-			log.Info().Str("port", v).Msg("Port configured from environment variable")
-		}
-	}
+	// Listen port: only the -port flag (default 8080). WUZAPI_PORT is not read here on purpose —
+	// orchestrators often set it for published port / Traefik labels while the process should
+	// keep listening on the container's internal port (see docker-compose host:container mapping).
 
 	// Novo bloco para sobrescrever o osName pelo ENV, se existir
 	if v := os.Getenv("SESSION_DEVICE_NAME"); v != "" {
