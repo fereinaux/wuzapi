@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"golang.org/x/net/proxy"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // db field declaration as *sqlx.DB
@@ -85,7 +87,7 @@ func sendEventStdio(mycli *MyClient, postmap map[string]interface{}) {
 
 // Connects to Whatsapp Websocket on server startup if last state was connected
 func (s *server) connectOnStartup() {
-	rows, err := s.db.Queryx("SELECT id,name,token,jid,webhook,events,proxy_url,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END AS s3_enabled,media_delivery,COALESCE(history, 0) as history,hmac_key FROM users WHERE connected=1")
+	rows, err := s.db.Queryx("SELECT id,name,token,jid,webhook,events,proxy_url,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END AS s3_enabled,media_delivery,COALESCE(history, 0) as history,COALESCE(inbound_webhook,0),COALESCE(sync_history,0),hmac_key FROM users WHERE connected=1")
 	if err != nil {
 		log.Error().Err(err).Msg("DB Problem")
 		return
@@ -102,8 +104,9 @@ func (s *server) connectOnStartup() {
 		s3_enabled := ""
 		media_delivery := ""
 		var history int
+		var inboundFlag, syncFlag int
 		var hmac_key []byte
-		err = rows.Scan(&txtid, &name, &token, &jid, &webhook, &events, &proxy_url, &s3_enabled, &media_delivery, &history, &hmac_key)
+		err = rows.Scan(&txtid, &name, &token, &jid, &webhook, &events, &proxy_url, &s3_enabled, &media_delivery, &history, &inboundFlag, &syncFlag, &hmac_key)
 		if err != nil {
 			log.Error().Err(err).Msg("DB Problem")
 			return
@@ -111,6 +114,14 @@ func (s *server) connectOnStartup() {
 			hmacKeyEncrypted := ""
 			if len(hmac_key) > 0 {
 				hmacKeyEncrypted = base64.StdEncoding.EncodeToString(hmac_key)
+			}
+
+			inboundStr, syncStr := "false", "false"
+			if inboundFlag != 0 {
+				inboundStr = "true"
+			}
+			if syncFlag != 0 {
+				syncStr = "true"
 			}
 
 			log.Info().Str("token", token).Msg("Connect to Whatsapp on startup")
@@ -125,6 +136,8 @@ func (s *server) connectOnStartup() {
 				"S3Enabled":        s3_enabled,
 				"MediaDelivery":    media_delivery,
 				"History":          fmt.Sprintf("%d", history),
+				"InboundWebhook":   inboundStr,
+				"SyncHistory":      syncStr,
 				"HmacKeyEncrypted": hmacKeyEncrypted,
 			}}
 			userinfocache.Set(token, v, cache.NoExpiration)
@@ -553,7 +566,6 @@ func fileToBase64(filepath string) (string, string, error) {
 func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	txtid := mycli.userID
 	postmap := make(map[string]interface{})
-	postmap["event"] = rawEvt
 
 	switch evt := rawEvt.(type) {
 	case *events.AppStateSyncComplete:
@@ -611,17 +623,56 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		log.Info().Msg("Received StreamReplaced event")
 		return
 	case *events.Message:
-		// Message events removed - only sending functionality is supported
-		return
+		postmap["type"] = "Message"
+		infoBytes, err := json.Marshal(evt.Info)
+		if err != nil {
+			log.Warn().Err(err).Msg("Message Info json")
+			break
+		}
+		var infoObj interface{}
+		_ = json.Unmarshal(infoBytes, &infoObj)
+		evData := map[string]interface{}{
+			"Info":              infoObj,
+			"IsEphemeral":       evt.IsEphemeral,
+			"IsViewOnce":        evt.IsViewOnce,
+			"IsViewOnceV2":      evt.IsViewOnceV2,
+			"IsEdit":            evt.IsEdit,
+			"UnavailableRequestID": evt.UnavailableRequestID,
+			"RetryCount":        evt.RetryCount,
+		}
+		if evt.Message != nil {
+			mb, perr := protojson.Marshal(evt.Message)
+			if perr != nil {
+				log.Warn().Err(perr).Msg("Message protojson")
+			} else {
+				var msgObj interface{}
+				_ = json.Unmarshal(mb, &msgObj)
+				evData["Message"] = msgObj
+			}
+		}
+		postmap["event"] = evData
 	case *events.Receipt:
-		// Receipt events removed - only sending functionality is supported
-		return
+		postmap["type"] = "ReadReceipt"
+		if b, err := json.Marshal(evt); err == nil {
+			var obj interface{}
+			_ = json.Unmarshal(b, &obj)
+			postmap["event"] = obj
+		}
 	case *events.Presence:
 		// Presence events removed - only sending functionality is supported
 		return
 	case *events.HistorySync:
-		// HistorySync events removed - only sending functionality is supported
-		return
+		postmap["type"] = "HistorySync"
+		if evt.Data != nil {
+			hb, err := protojson.Marshal(evt.Data)
+			if err != nil {
+				log.Warn().Err(err).Msg("HistorySync protojson")
+			} else {
+				var obj interface{}
+				_ = json.Unmarshal(hb, &obj)
+				postmap["event"] = obj
+			}
+		}
 	case *events.AppState:
 		log.Info().Str("index", fmt.Sprintf("%+v", evt.Index)).Str("actionValue", fmt.Sprintf("%+v", evt.SyncActionValue)).Msg("App state event received")
 	case *events.LoggedOut:
@@ -736,6 +787,11 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		log.Warn().Str("event", fmt.Sprintf("%+v", evt)).Msg("Unhandled event")
 	}
 
-	// Webhooks removed - only stdio mode notifications
+	// Webhooks: HTTP POST when inbound_webhook flag is set; stdio unchanged
 	sendEventStdio(mycli, postmap)
+	if mycli.s != nil {
+		if t, ok := postmap["type"].(string); ok && t != "" {
+			mycli.s.dispatchWebhook(mycli, postmap)
+		}
+	}
 }

@@ -365,6 +365,7 @@ func main() {
 	s.routes()
 
 	s.connectOnStartup()
+	s.startMidnightDisconnectScheduler()
 
 	// Start session cleanup goroutine to unload inactive sessions from memory
 	go func() {

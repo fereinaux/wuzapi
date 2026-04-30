@@ -65,6 +65,11 @@ var migrations = []Migration{
 		Name:  "add_whatsmeow_message_secrets_message_id_idx",
 		UpSQL: addWhatsmeowMessageSecretsMessageIDIndexSQL,
 	},
+	{
+		ID:    10,
+		Name:  "add_inbound_webhook_sync_history_flags",
+		UpSQL: addInboundWebhookSyncHistorySQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -379,6 +384,15 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
+	} else if migration.ID == 10 {
+		if db.DriverName() == "sqlite" {
+			err = addColumnIfNotExistsSQLite(tx, "users", "inbound_webhook", "INTEGER NOT NULL DEFAULT 0")
+			if err == nil {
+				err = addColumnIfNotExistsSQLite(tx, "users", "sync_history", "INTEGER NOT NULL DEFAULT 0")
+			}
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
 	} else {
 		_, err = tx.Exec(migration.UpSQL)
 	}
@@ -577,6 +591,21 @@ func addColumnIfNotExistsSQLite(tx *sqlx.Tx, tableName, columnName, columnDef st
 	}
 	return nil
 }
+
+const addInboundWebhookSyncHistorySQL = `
+-- PostgreSQL: inbound flags (0/1 integers for portability)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'inbound_webhook') THEN
+        ALTER TABLE users ADD COLUMN inbound_webhook INTEGER NOT NULL DEFAULT 0;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'sync_history') THEN
+        ALTER TABLE users ADD COLUMN sync_history INTEGER NOT NULL DEFAULT 0;
+    END IF;
+END $$;
+
+-- SQLite version (handled in code)
+`
 
 const addHmacKeySQL = `
 -- PostgreSQL version - Add encrypted HMAC key column

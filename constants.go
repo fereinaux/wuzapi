@@ -40,6 +40,11 @@ var supportedEventTypes = []string{
 	"OfflineSyncCompleted",
 	"OfflineSyncPreview",
 
+	// Inbound messaging (webhook)
+	"Message",
+	"HistorySync",
+	"ReadReceipt",
+
 	// Calls
 	"CallOffer",
 	"CallAccept",

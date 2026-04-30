@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -154,7 +155,7 @@ func (s *server) authalice(next http.Handler) http.Handler {
 		if !found {
 			log.Info().Msg("Looking for user information in DB")
 			// Checks DB from matching user and store user values in context
-			rows, err := s.db.Query("SELECT id,name,webhook,jid,events,proxy_url,qrcode,history,hmac_key IS NOT NULL AND length(hmac_key) > 0,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END,COALESCE(media_delivery, 'base64') FROM users WHERE token=$1 LIMIT 1", token)
+			rows, err := s.db.Query(`SELECT id,name,webhook,jid,events,proxy_url,qrcode,history,hmac_key IS NOT NULL AND length(hmac_key) > 0,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END,COALESCE(media_delivery, 'base64'),COALESCE(inbound_webhook, 0),COALESCE(sync_history, 0),hmac_key FROM users WHERE token=$1 LIMIT 1`, token)
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, err)
 				return
@@ -162,8 +163,10 @@ func (s *server) authalice(next http.Handler) http.Handler {
 			defer rows.Close()
 			var history sql.NullInt64
 			var s3Enabled, mediaDelivery string
+			var inboundWebhookInt, syncHistoryInt int
+			var hmacKeyRaw []byte
 			for rows.Next() {
-				err = rows.Scan(&txtid, &name, &webhook, &jid, &events, &proxy_url, &qrcode, &history, &hasHmac, &s3Enabled, &mediaDelivery)
+				err = rows.Scan(&txtid, &name, &webhook, &jid, &events, &proxy_url, &qrcode, &history, &hasHmac, &s3Enabled, &mediaDelivery, &inboundWebhookInt, &syncHistoryInt, &hmacKeyRaw)
 				if err != nil {
 					s.Respond(w, r, http.StatusInternalServerError, err)
 					return
@@ -176,19 +179,35 @@ func (s *server) authalice(next http.Handler) http.Handler {
 				// Debug logging for history value
 				log.Debug().Str("userId", txtid).Bool("historyValid", history.Valid).Int64("historyValue", history.Int64).Str("historyStr", historyStr).Msg("User authentication - history debug")
 
+				inboundStr, syncStr := "false", "false"
+				if inboundWebhookInt != 0 {
+					inboundStr = "true"
+				}
+				if syncHistoryInt != 0 {
+					syncStr = "true"
+				}
+
+				hmacKeyB64 := ""
+				if len(hmacKeyRaw) > 0 {
+					hmacKeyB64 = base64.StdEncoding.EncodeToString(hmacKeyRaw)
+				}
+
 				v := Values{map[string]string{
-					"Id":            txtid,
-					"Name":          name,
-					"Jid":           jid,
-					"Webhook":       webhook,
-					"Token":         token,
-					"Proxy":         proxy_url,
-					"Events":        events,
-					"Qrcode":        qrcode,
-					"History":       historyStr,
-					"HasHmac":       strconv.FormatBool(hasHmac),
-					"S3Enabled":     s3Enabled,
-					"MediaDelivery": mediaDelivery,
+					"Id":               txtid,
+					"Name":             name,
+					"Jid":              jid,
+					"Webhook":          webhook,
+					"Token":            token,
+					"Proxy":            proxy_url,
+					"Events":           events,
+					"Qrcode":           qrcode,
+					"History":          historyStr,
+					"HasHmac":          strconv.FormatBool(hasHmac),
+					"S3Enabled":        s3Enabled,
+					"MediaDelivery":    mediaDelivery,
+					"InboundWebhook":   inboundStr,
+					"SyncHistory":      syncStr,
+					"HmacKeyEncrypted": hmacKeyB64,
 				}}
 
 				userinfocache.Set(token, v, cache.NoExpiration)
@@ -213,8 +232,10 @@ func (s *server) authalice(next http.Handler) http.Handler {
 func (s *server) Connect() http.HandlerFunc {
 
 	type connectStruct struct {
-		Subscribe []string
-		Immediate bool
+		Subscribe      []string `json:"Subscribe"`
+		Immediate      bool     `json:"Immediate"`
+		InboundWebhook bool     `json:"InboundWebhook"`
+		HistorySync    bool     `json:"HistorySync"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +252,11 @@ func (s *server) Connect() http.HandlerFunc {
 		err := decoder.Decode(&t)
 		if err != nil {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
+			return
+		}
+
+		if t.InboundWebhook && strings.TrimSpace(webhook) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("inbound webhook requires a configured webhook URL (set via admin or POST /webhook)"))
 			return
 		}
 
@@ -258,13 +284,57 @@ func (s *server) Connect() http.HandlerFunc {
 				}
 			}
 		}
+
+		if t.InboundWebhook || t.HistorySync {
+			var stripped []string
+			for _, ev := range subscribedEvents {
+				if strings.TrimSpace(ev) != "" {
+					stripped = append(stripped, ev)
+				}
+			}
+			subscribedEvents = stripped
+		}
+		if t.InboundWebhook {
+			if !Find(subscribedEvents, "Message") {
+				subscribedEvents = append(subscribedEvents, "Message")
+			}
+			if !Find(subscribedEvents, "ReadReceipt") {
+				subscribedEvents = append(subscribedEvents, "ReadReceipt")
+			}
+		}
+		if t.HistorySync {
+			if !Find(subscribedEvents, "HistorySync") {
+				subscribedEvents = append(subscribedEvents, "HistorySync")
+			}
+		}
+		if len(subscribedEvents) == 0 {
+			subscribedEvents = append(subscribedEvents, "")
+		}
+
 		eventstring = strings.Join(subscribedEvents, ",")
-		_, err = s.db.Exec("UPDATE users SET events=$1 WHERE id=$2", eventstring, txtid)
+		inboundInt, syncInt := 0, 0
+		if t.InboundWebhook {
+			inboundInt = 1
+		}
+		if t.HistorySync {
+			syncInt = 1
+		}
+
+		_, err = s.db.Exec("UPDATE users SET events=$1, inbound_webhook=$2, sync_history=$3 WHERE id=$4", eventstring, inboundInt, syncInt, txtid)
 		if err != nil {
-			log.Warn().Msg("Could not set events in users table")
+			log.Warn().Msg("Could not set events/flags in users table")
 		}
 		log.Info().Str("events", eventstring).Msg("Setting subscribed events")
 		v := updateUserInfo(r.Context().Value("userinfo"), "Events", eventstring)
+		inboundStr, syncStr := "false", "false"
+		if inboundInt != 0 {
+			inboundStr = "true"
+		}
+		if syncInt != 0 {
+			syncStr = "true"
+		}
+		v = updateUserInfo(v, "InboundWebhook", inboundStr)
+		v = updateUserInfo(v, "SyncHistory", syncStr)
 		userinfocache.Set(token, v, cache.NoExpiration)
 
 		log.Info().Str("jid", jid).Msg("Attempt to connect")
@@ -4369,15 +4439,17 @@ func (s *server) AddUser() http.HandlerFunc {
 
 		// Parse the request body
 		var user struct {
-			Name        string       `json:"name"`
-			Token       string       `json:"token"`
-			Webhook     string       `json:"webhook,omitempty"`
-			Expiration  int          `json:"expiration,omitempty"`
-			Events      string       `json:"events,omitempty"`
-			ProxyConfig *ProxyConfig `json:"proxyConfig,omitempty"`
-			S3Config    *S3Config    `json:"s3Config,omitempty"`
-			HmacKey     string       `json:"hmacKey,omitempty"`
-			History     int          `json:"history,omitempty"`
+			Name            string       `json:"name"`
+			Token           string       `json:"token"`
+			Webhook         string       `json:"webhook,omitempty"`
+			Expiration      int          `json:"expiration,omitempty"`
+			Events          string       `json:"events,omitempty"`
+			ProxyConfig     *ProxyConfig `json:"proxyConfig,omitempty"`
+			S3Config        *S3Config    `json:"s3Config,omitempty"`
+			HmacKey         string       `json:"hmacKey,omitempty"`
+			History         int          `json:"history,omitempty"`
+			InboundWebhook  *bool        `json:"inboundWebhook,omitempty"`
+			SyncHistoryFlag *bool        `json:"syncHistory,omitempty"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
@@ -4482,11 +4554,19 @@ func (s *server) AddUser() http.HandlerFunc {
 			return
 		}
 
+		inboundWebhookInt, syncHistInt := 0, 0
+		if user.InboundWebhook != nil && *user.InboundWebhook {
+			inboundWebhookInt = 1
+		}
+		if user.SyncHistoryFlag != nil && *user.SyncHistoryFlag {
+			syncHistInt = 1
+		}
+
 		// Insert user with all proxy and HMAC fields (S3 removed)
 		if _, err = s.db.Exec(
-			"INSERT INTO users (id, name, token, webhook, expiration, events, jid, qrcode, proxy_url, s3_enabled, s3_endpoint, s3_region, s3_bucket, s3_access_key, s3_secret_key, s3_path_style, s3_public_url, media_delivery, s3_retention_days, hmac_key, history) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
+			"INSERT INTO users (id, name, token, webhook, expiration, events, jid, qrcode, proxy_url, s3_enabled, s3_endpoint, s3_region, s3_bucket, s3_access_key, s3_secret_key, s3_path_style, s3_public_url, media_delivery, s3_retention_days, hmac_key, history, inbound_webhook, sync_history) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)",
 			id, user.Name, user.Token, user.Webhook, user.Expiration, user.Events, "", "", user.ProxyConfig.ProxyURL,
-			false, "", "", "", "", "", true, "", "base64", 30, encryptedHmacKey, user.History,
+			false, "", "", "", "", "", true, "", "base64", 30, encryptedHmacKey, user.History, inboundWebhookInt, syncHistInt,
 		); err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("admin DB error")
 			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -4538,14 +4618,16 @@ func (s *server) EditUser() http.HandlerFunc {
 
 		// Parse the request body
 		var user struct {
-			Name        string       `json:"name,omitempty"`
-			Token       string       `json:"token,omitempty"`
-			Webhook     string       `json:"webhook,omitempty"`
-			Expiration  int          `json:"expiration,omitempty"`
-			Events      string       `json:"events,omitempty"`
-			ProxyConfig *ProxyConfig `json:"proxyConfig,omitempty"`
-			S3Config    *S3Config    `json:"s3Config,omitempty"`
-			History     int          `json:"history,omitempty"`
+			Name            string       `json:"name,omitempty"`
+			Token           string       `json:"token,omitempty"`
+			Webhook         string       `json:"webhook,omitempty"`
+			Expiration      int          `json:"expiration,omitempty"`
+			Events          string       `json:"events,omitempty"`
+			ProxyConfig     *ProxyConfig `json:"proxyConfig,omitempty"`
+			S3Config        *S3Config    `json:"s3Config,omitempty"`
+			History         int          `json:"history,omitempty"`
+			InboundWebhook  *bool        `json:"inboundWebhook,omitempty"`
+			SyncHistoryFlag *bool        `json:"syncHistory,omitempty"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
@@ -4624,6 +4706,20 @@ func (s *server) EditUser() http.HandlerFunc {
 		addField("expiration", user.Expiration, user.Expiration != 0)
 		addField("events", user.Events, user.Events != "")
 		addField("history", user.History, user.History != 0)
+		if user.InboundWebhook != nil {
+			vv := 0
+			if *user.InboundWebhook {
+				vv = 1
+			}
+			addField("inbound_webhook", vv, true)
+		}
+		if user.SyncHistoryFlag != nil {
+			vv := 0
+			if *user.SyncHistoryFlag {
+				vv = 1
+			}
+			addField("sync_history", vv, true)
+		}
 
 		// Handle proxy config
 		if user.ProxyConfig != nil {
@@ -4958,6 +5054,86 @@ func validateMessageFields(phone string, stanzaid *string, participant *string) 
 	}
 
 	return recipient, nil
+}
+
+// Get webhook URL and subscribed events (dashboard / API)
+func (s *server) GetWebhook() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		var webhook, events string
+		err := s.db.QueryRow("SELECT webhook, events FROM users WHERE id = $1", txtid).Scan(&webhook, &events)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("database error"))
+			return
+		}
+		subscribe := []string{}
+		for _, e := range strings.Split(events, ",") {
+			e = strings.TrimSpace(e)
+			if e != "" {
+				subscribe = append(subscribe, e)
+			}
+		}
+		out, _ := json.Marshal(map[string]interface{}{
+			"webhook":   webhook,
+			"subscribe": subscribe,
+		})
+		s.Respond(w, r, http.StatusOK, string(out))
+	}
+}
+
+// SetWebhook configures webhook URL and event subscriptions for the authenticated user
+func (s *server) SetWebhook() http.HandlerFunc {
+	type webhookReq struct {
+		WebhookURL string   `json:"webhookurl"`
+		Events     []string `json:"events"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		token := r.Context().Value("userinfo").(Values).Get("Token")
+		var body webhookReq
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode payload"))
+			return
+		}
+		urlStr := strings.TrimSpace(body.WebhookURL)
+		if urlStr != "" && !isHTTPURL(urlStr) {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid webhook URL"))
+			return
+		}
+		var eventParts []string
+		if len(body.Events) > 0 && Find(body.Events, "All") {
+			eventParts = []string{"All"}
+		} else {
+			for _, ev := range body.Events {
+				ev = strings.TrimSpace(ev)
+				if ev == "" {
+					continue
+				}
+				if !Find(supportedEventTypes, ev) {
+					s.Respond(w, r, http.StatusBadRequest, fmt.Errorf("invalid event: %s", ev))
+					return
+				}
+				if !Find(eventParts, ev) {
+					eventParts = append(eventParts, ev)
+				}
+			}
+		}
+		eventStr := strings.Join(eventParts, ",")
+		if _, err := s.db.Exec("UPDATE users SET webhook = $1, events = $2 WHERE id = $3", urlStr, eventStr, txtid); err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("database error"))
+			return
+		}
+		if u, ok := userinfocache.Get(token); ok {
+			v := updateUserInfo(u, "Webhook", urlStr)
+			v = updateUserInfo(v, "Events", eventStr)
+			userinfocache.Set(token, v, cache.NoExpiration)
+		}
+		out, _ := json.Marshal(map[string]interface{}{
+			"webhook":   urlStr,
+			"subscribe": eventParts,
+		})
+		s.Respond(w, r, http.StatusOK, string(out))
+	}
 }
 
 // Set history
