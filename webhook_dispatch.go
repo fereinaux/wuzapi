@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +83,15 @@ func (s *server) dispatchWebhook(mycli *MyClient, postmap map[string]interface{}
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// HistorySync de conta grande pode levar muito mais que 30s no consumidor (parse + INSERT
+	// em lotes). Timeout maior evita perda silenciosa do payload, já que aqui não há retry.
+	timeout := 120 * time.Second
+	if envVal := strings.TrimSpace(os.Getenv("WEBHOOK_TIMEOUT_SECONDS")); envVal != "" {
+		if n, err := strconv.Atoi(envVal); err == nil && n > 0 && n <= 600 {
+			timeout = time.Duration(n) * time.Second
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wh, bytes.NewReader(body))
 	if err != nil {
@@ -104,7 +113,7 @@ func (s *server) dispatchWebhook(mycli *MyClient, postmap map[string]interface{}
 		}
 	}
 
-	resp, err := globalHTTPClient.Do(req)
+	resp, err := webhookHTTPClient.Do(req)
 	if err != nil {
 		log.Warn().Err(err).Str("url", wh).Msg("webhook post failed")
 		return

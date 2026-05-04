@@ -60,19 +60,23 @@ var (
 	mode                = flag.String("mode", "http", "Server mode: http or stdio")
 	dataDir             = flag.String("datadir", "", "Data directory for database and session files (defaults to executable directory)")
 
-	container        *sqlstore.Container
-	clientManager    = NewClientManager()
-	killchannel      = make(map[string](chan bool))
-	userinfocache    = cache.New(5*time.Minute, 10*time.Minute)
-	lastMessageCache = cache.New(24*time.Hour, 24*time.Hour)
-	globalHTTPClient = newSafeHTTPClient()
+	container         *sqlstore.Container
+	clientManager     = NewClientManager()
+	killchannel       = make(map[string](chan bool))
+	userinfocache     = cache.New(5*time.Minute, 10*time.Minute)
+	lastMessageCache  = cache.New(24*time.Hour, 24*time.Hour)
+	globalHTTPClient  = newSafeHTTPClient(60 * time.Second)
+	// Cliente separado para webhooks: HistorySync de conta grande pode passar bem dos 60s
+	// (parse do payload + INSERTs em lote no consumidor). Mantemos margem sobre o context
+	// timeout do dispatcher (default 120s).
+	webhookHTTPClient = newSafeHTTPClient(180 * time.Second)
 )
 
 var privateIPBlocks []*net.IPNet
 
 const version = "1.0.6"
 
-func newSafeHTTPClient() *http.Client {
+func newSafeHTTPClient(timeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -135,7 +139,7 @@ func newSafeHTTPClient() *http.Client {
 	}
 
 	return &http.Client{
-		Timeout:   60 * time.Second,
+		Timeout:   timeout,
 		Transport: transport,
 	}
 }
