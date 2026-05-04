@@ -85,8 +85,14 @@ func sendEventStdio(mycli *MyClient, postmap map[string]interface{}) {
 	}
 }
 
-// Connects to Whatsapp Websocket on server startup if last state was connected
+// Connects to Whatsapp Websocket on server startup if last state was connected.
+//
+// Anti-StreamReplaced (Fase 5.1): mantém um set de jids já lançados nesta execução
+// para garantir que o mesmo dispositivo não receba 2 startClient em paralelo.
+// Conectar 2 sessões com o mesmo JID dispara StreamReplaced no whatsmeow e
+// invalida a sessão (precisa de novo QR).
 func (s *server) connectOnStartup() {
+	startedJids := make(map[string]bool)
 	rows, err := s.db.Queryx("SELECT id,name,token,jid,webhook,events,proxy_url,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END AS s3_enabled,media_delivery,COALESCE(history, 0) as history,COALESCE(inbound_webhook,0),COALESCE(sync_history,0),hmac_key FROM users WHERE connected=1")
 	if err != nil {
 		log.Error().Err(err).Msg("DB Problem")
@@ -161,6 +167,15 @@ func (s *server) connectOnStartup() {
 			}
 			eventstring := strings.Join(subscribedEvents, ",")
 			log.Info().Str("events", eventstring).Str("jid", jid).Msg("Attempt to connect")
+			// Single-instance: se já lançamos startClient para este JID nesta inicialização,
+			// pular para não disparar StreamReplaced no whatsmeow.
+			if jid != "" && startedJids[jid] {
+				log.Warn().Str("jid", jid).Str("token", token).Msg("connectOnStartup: jid já em uso nesta execução, pulando duplicata")
+				continue
+			}
+			if jid != "" {
+				startedJids[jid] = true
+			}
 			killchannel[txtid] = make(chan bool, 1)
 			go s.startClient(txtid, jid, token, subscribedEvents)
 

@@ -83,6 +83,18 @@ func (s *server) dispatchWebhook(mycli *MyClient, postmap map[string]interface{}
 		return
 	}
 
+	// Throttle por userID: serializa rajada de webhooks pra mesma sessão (anti-rajada
+	// para o consumidor) sem descartar nenhum evento. Configurável via
+	// WEBHOOK_MIN_INTERVAL_MS (default 50ms). Setar 0 desativa.
+	if envInt := strings.TrimSpace(os.Getenv("WEBHOOK_MIN_INTERVAL_MS")); envInt != "" {
+		if n, err := strconv.Atoi(envInt); err == nil && n >= 0 && n <= 5000 {
+			webhookMinIntMs = n
+		}
+	}
+	if webhookMinIntMs > 0 {
+		waitForWebhookSlot(mycli.userID)
+	}
+
 	// HistorySync de conta grande pode levar muito mais que 30s no consumidor (parse + INSERT
 	// em lotes). Timeout maior evita perda silenciosa do payload, já que aqui não há retry.
 	timeout := 120 * time.Second
