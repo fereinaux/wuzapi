@@ -5558,3 +5558,129 @@ func (s *server) ArchiveChat() http.HandlerFunc {
 	}
 
 }
+
+// DownloadMedia baixa o conteúdo de uma mensagem de mídia recebida usando os metadados
+// (mediaKey, fileEncSha, fileSha, directPath, fileLength, mediaType) extraídos do payload
+// original do webhook.
+//
+// Por que: events.Message entrega URLs CDN criptografadas (`mmg.whatsapp.net/...`) que não
+// abrem em <img>/<audio> sem descriptografar com a mediaKey da sessão. Em vez de expor a chave
+// para o consumidor do webhook, este endpoint encapsula a chamada `DownloadMediaWithPath` do
+// whatsmeow e devolve os bytes já descriptografados, prontos para serem servidos em CDN/S3
+// pelo backend chamador.
+//
+// Resposta: corpo binário com o Content-Type da mídia. Erros: 400 (payload inválido), 500 (sem
+// sessão), 502 (download falhou no whatsmeow).
+func (s *server) DownloadMedia() http.HandlerFunc {
+	type downloadStruct struct {
+		MediaType  string `json:"mediaType"`  // image | audio | video | document | sticker
+		MediaKey   string `json:"mediaKey"`   // base64 padrão
+		FileEncSha string `json:"fileEncSha"` // base64 padrão
+		FileSha    string `json:"fileSha"`    // base64 padrão
+		DirectPath string `json:"directPath"`
+		FileLength uint64 `json:"fileLength"`
+		Mimetype   string `json:"mimetype,omitempty"`
+	}
+
+	decodeB64 := func(s string) ([]byte, error) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil, nil
+		}
+		// Aceita std e URL-safe (com ou sem padding) — protojson de bytes do whatsmeow varia.
+		if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+			return b, nil
+		}
+		if b, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+			return b, nil
+		}
+		if b, err := base64.URLEncoding.DecodeString(s); err == nil {
+			return b, nil
+		}
+		return base64.RawURLEncoding.DecodeString(s)
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		var t downloadStruct
+		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
+			return
+		}
+		if strings.TrimSpace(t.DirectPath) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing directPath in Payload"))
+			return
+		}
+		if strings.TrimSpace(t.MediaKey) == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing mediaKey in Payload"))
+			return
+		}
+
+		mediaKey, err := decodeB64(t.MediaKey)
+		if err != nil || len(mediaKey) == 0 {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid mediaKey base64"))
+			return
+		}
+		encSha, err := decodeB64(t.FileEncSha)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid fileEncSha base64"))
+			return
+		}
+		fileSha, err := decodeB64(t.FileSha)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid fileSha base64"))
+			return
+		}
+
+		var mediaType whatsmeow.MediaType
+		switch strings.ToLower(strings.TrimSpace(t.MediaType)) {
+		case "image", "sticker":
+			mediaType = whatsmeow.MediaImage
+		case "audio", "ptt":
+			mediaType = whatsmeow.MediaAudio
+		case "video":
+			mediaType = whatsmeow.MediaVideo
+		case "document":
+			mediaType = whatsmeow.MediaDocument
+		default:
+			s.Respond(w, r, http.StatusBadRequest, fmt.Errorf("unsupported mediaType: %q", t.MediaType))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		data, err := client.DownloadMediaWithPath(
+			ctx,
+			t.DirectPath,
+			encSha,
+			fileSha,
+			mediaKey,
+			int(t.FileLength),
+			mediaType,
+			"",
+		)
+		if err != nil {
+			log.Warn().Err(err).Str("userid", txtid).Str("mediaType", t.MediaType).Msg("download media failed")
+			s.Respond(w, r, http.StatusBadGateway, fmt.Errorf("download failed: %v", err))
+			return
+		}
+
+		ct := strings.TrimSpace(t.Mimetype)
+		if ct == "" {
+			ct = http.DetectContentType(data)
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.Header().Set("Cache-Control", "private, max-age=300")
+		w.WriteHeader(http.StatusOK)
+		if _, werr := w.Write(data); werr != nil {
+			log.Warn().Err(werr).Msg("download media write failed")
+		}
+	}
+}
