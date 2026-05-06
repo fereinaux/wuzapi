@@ -321,6 +321,19 @@ func main() {
 		}
 	}()
 
+	// Verify the admin database is reachable before proceeding. A short timeout
+	// surfaces misconfiguration (wrong host, blocked port, dead container)
+	// immediately instead of failing on the first request.
+	{
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := db.PingContext(pingCtx); err != nil {
+			pingCancel()
+			log.Fatal().Err(err).Msg("Failed to ping admin database")
+			os.Exit(1)
+		}
+		pingCancel()
+	}
+
 	var dbLog waLog.Logger
 	if *waDebug != "" {
 		dbLog = waLog.Stdout("Database", *waDebug, *colorOutput)
@@ -342,6 +355,16 @@ func main() {
 
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error creating sqlstore")
+		os.Exit(1)
+	}
+
+	// Enforce Postgres in production. SQLite contention (_timeout=10000) on the
+	// whatsmeow sqlstore causes request timeouts under load, so production
+	// deployments must opt out of SQLite by setting WUZAPI_REQUIRE_POSTGRES=true.
+	if strings.EqualFold(os.Getenv("WUZAPI_REQUIRE_POSTGRES"), "true") && config.Type != "postgres" {
+		log.Fatal().
+			Str("dbType", config.Type).
+			Msg("WUZAPI_REQUIRE_POSTGRES=true but database is not Postgres. Set DB_USER/DB_PASSWORD/DB_NAME/DB_HOST/DB_PORT (and optionally DB_SSLMODE) to use Postgres.")
 		os.Exit(1)
 	}
 

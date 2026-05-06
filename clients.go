@@ -42,6 +42,18 @@ func (cm *ClientManager) GetWhatsmeowClient(userID string) *whatsmeow.Client {
 	return cm.whatsmeowClients[userID]
 }
 
+// PeekWhatsmeowClient retorna o ponteiro do cliente whatsmeow usando apenas
+// RLock — não atualiza lastActivity. Use em hot paths de leitura/polling
+// (ex.: GetStatus, GetUserInfo, GetGroupInfo) onde a contestação do Lock
+// global virou gargalo. Sessões realmente ativas continuam tendo
+// lastActivity bumpada por SendMessage/etc., e o UnloadInactiveSessions só
+// descarta sessões desconectadas, então omitir o bump aqui é seguro.
+func (cm *ClientManager) PeekWhatsmeowClient(userID string) *whatsmeow.Client {
+	cm.RLock()
+	defer cm.RUnlock()
+	return cm.whatsmeowClients[userID]
+}
+
 func (cm *ClientManager) DeleteWhatsmeowClient(userID string) {
 	cm.Lock()
 	defer cm.Unlock()

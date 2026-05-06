@@ -170,6 +170,17 @@ DB_SSLMODE=false
 **For SQLite (default):**
 No database configuration needed - SQLite is used by default if no PostgreSQL settings are provided.
 
+##### Production: Postgres required
+
+In production, set `WUZAPI_REQUIRE_POSTGRES=true` so the server refuses to start unless Postgres is configured. SQLite is fine for local development, but under load its single-writer contention (`_timeout=10000`) causes request timeouts in both the admin database and the whatsmeow `sqlstore`.
+
+When `WUZAPI_REQUIRE_POSTGRES=true`, you must provide all of:
+
+* `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_HOST`, `DB_PORT`
+* `DB_SSLMODE` (optional; `true`/`require`, `false`/`disable`)
+
+If any of those are missing, or if Postgres is unreachable, startup logs a fatal error and exits. The admin DB is also pinged at startup with a 5s timeout regardless of this flag — connection failures abort startup.
+
 #### Optional Settings
 ```
 TZ=America/New_York
