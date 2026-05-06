@@ -70,6 +70,11 @@ var migrations = []Migration{
 		Name:  "add_inbound_webhook_sync_history_flags",
 		UpSQL: addInboundWebhookSyncHistorySQL,
 	},
+	{
+		ID:    11,
+		Name:  "add_users_history_column",
+		UpSQL: addUsersHistoryColumnSQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -393,6 +398,12 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
+	} else if migration.ID == 11 {
+		if db.DriverName() == "sqlite" {
+			err = addColumnIfNotExistsSQLite(tx, "users", "history", "INTEGER NOT NULL DEFAULT 0")
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
 	} else {
 		_, err = tx.Exec(migration.UpSQL)
 	}
@@ -591,6 +602,18 @@ func addColumnIfNotExistsSQLite(tx *sqlx.Tx, tableName, columnName, columnDef st
 	}
 	return nil
 }
+
+const addUsersHistoryColumnSQL = `
+-- PostgreSQL: history flag on users (whatsmeow history sync depth / UI)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'history') THEN
+        ALTER TABLE users ADD COLUMN history INTEGER NOT NULL DEFAULT 0;
+    END IF;
+END $$;
+
+-- SQLite version (handled in applyMigration)
+`
 
 const addInboundWebhookSyncHistorySQL = `
 -- PostgreSQL: inbound flags (0/1 integers for portability)
