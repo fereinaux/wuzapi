@@ -389,6 +389,7 @@ func main() {
 		exPath: exPath,
 		mode:   serverMode,
 	}
+	initDownloadLimits()
 	s.routes()
 
 	s.connectOnStartup()

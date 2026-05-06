@@ -5604,6 +5604,10 @@ func (s *server) ArchiveChat() http.HandlerFunc {
 // (mediaKey, fileEncSha, fileSha, directPath, fileLength, mediaType) extraídos do payload
 // original do webhook.
 //
+// Produção: use Postgres para o store (`WUZAPI_REQUIRE_POSTGRES=true`); SQLite sob carga
+// aumenta timeouts. Limite de concorrência: WUZAPI_DOWNLOAD_MAX_CONCURRENT (default 8),
+// opcional WUZAPI_DOWNLOAD_MAX_PER_USER por sessão.
+//
 // Por que: events.Message entrega URLs CDN criptografadas (`mmg.whatsapp.net/...`) que não
 // abrem em <img>/<audio> sem descriptografar com a mediaKey da sessão. Em vez de expor a chave
 // para o consumidor do webhook, este endpoint encapsula a chamada `DownloadMediaWithPath` do
@@ -5648,6 +5652,14 @@ func (s *server) DownloadMedia() http.HandlerFunc {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
+
+		releaseSlots, err := acquireDownloadSlots(r.Context(), txtid)
+		if err != nil {
+			log.Warn().Err(err).Str("userid", txtid).Msg("download media: capacity saturated (slot acquire failed)")
+			s.Respond(w, r, http.StatusServiceUnavailable, errors.New("download capacity saturated, retry"))
+			return
+		}
+		defer releaseSlots()
 
 		var t downloadStruct
 		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
