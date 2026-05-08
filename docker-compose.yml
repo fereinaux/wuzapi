@@ -20,7 +20,6 @@ services:
       - TZ=${TZ:-America/Sao_Paulo}
       - WEBHOOK_FORMAT=${WEBHOOK_FORMAT:-json}
       - SESSION_DEVICE_NAME=${SESSION_DEVICE_NAME:-WuzAPI}
-    # Postgres compartilhado no Coolify: ver docker-compose.coolify-shared-db.yml (rede `coolify`).
     depends_on:
       db:
         condition: service_healthy
