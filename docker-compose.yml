@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Host port must be unique per machine: two Coolify apps cannot both use e.g. 9001.
+    # Set WUZAPI_PORT per deployment (e.g. 9001 on prod, 9002 on wuzapi-adm).
     ports:
       - "${WUZAPI_PORT:-8080}:8080"
     environment:
