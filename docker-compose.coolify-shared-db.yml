@@ -1,0 +1,21 @@
+# Sobreposição para Coolify: anexa o wuzapi-server à rede bridge `coolify`, onde costuma
+# ficar o Postgres standalone compartilhado (DNS interno tipo cpxm444…).
+#
+# Assim cada redeploy recria o container mas ele já entra na rede certa — sem depender do
+# nome efêmero `wuzapi-server-…-NNNN`.
+#
+# Uso no Coolify (Docker Compose):
+# - Em "Docker Compose", use dois ficheiros (se a UI permitir), nesta ordem:
+#     docker-compose.yml + docker-compose.coolify-shared-db.yml
+# - Ou copie só os blocos `services.wuzapi-server.networks` e `networks.coolify` para o compose do recurso.
+#
+# CLI local (opcional): exige `docker network create coolify` antes, se não existir.
+#
+services:
+  wuzapi-server:
+    networks:
+      - coolify
+
+networks:
+  coolify:
+    external: true
