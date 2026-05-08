@@ -390,6 +390,7 @@ func main() {
 		mode:   serverMode,
 	}
 	initDownloadLimits()
+	initSendLimits()
 	s.routes()
 
 	s.connectOnStartup()
