@@ -62,31 +62,7 @@ func (s *server) GetHealth() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uptime := time.Since(startTime)
 
-		var totalUsers int
-		rows, err := s.db.Query("SELECT COUNT(*) FROM users")
-		if err == nil {
-			defer rows.Close()
-			if rows.Next() {
-				rows.Scan(&totalUsers)
-			}
-		}
-
-		clientManager.RLock()
-		activeConnections := len(clientManager.whatsmeowClients)
-		connectedUsers := 0
-		loggedInUsers := 0
-
-		for _, client := range clientManager.whatsmeowClients {
-			if client != nil {
-				if client.IsConnected() {
-					connectedUsers++
-				}
-				if client.IsLoggedIn() {
-					loggedInUsers++
-				}
-			}
-		}
-		clientManager.RUnlock()
+		totalUsers, activeConnections, connectedUsers, loggedInUsers := s.healthAggregatedCounts()
 
 		var memStats runtime.MemStats
 		runtime.ReadMemStats(&memStats)
@@ -116,6 +92,15 @@ func (s *server) GetHealth() http.HandlerFunc {
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			log.Error().Err(err).Msg("Failed to write health check response")
 		}
+	}
+}
+
+// GetLive responde imediato sem Postgres nem clientManager — uso em probes (Coolify/uptime).
+func (s *server) GetLive() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"live"}`))
 	}
 }
 
@@ -260,13 +245,14 @@ func (s *server) Connect() http.HandlerFunc {
 			return
 		}
 
-		client := clientManager.GetWhatsmeowClient(txtid)
-		if client != nil {
-			isConnected := client.IsConnected()
-			if isConnected == true {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("already connected"))
-				return
-			}
+		client := clientManager.PeekWhatsmeowClient(txtid)
+		if client != nil && client.IsConnected() {
+			already, _ := json.Marshal(map[string]interface{}{
+				"details":   "already_connected",
+				"connected": true,
+			})
+			s.Respond(w, r, http.StatusOK, string(already))
+			return
 		}
 
 		var subscribedEvents []string
@@ -606,14 +592,6 @@ func (s *server) GetStatus() http.HandlerFunc {
 			isLoggedIn = wac.IsLoggedIn()
 		}
 
-		// Single QueryRow consolidating proxy_url + S3 cols + hmac_key.
-		var proxyURL string
-		var s3Enabled bool
-		var s3Endpoint, s3Region, s3Bucket, s3PublicURL, s3MediaDelivery string
-		var s3PathStyle bool
-		var s3RetentionDays int
-		var hmacKey []byte
-
 		s3Config := map[string]interface{}{
 			"enabled":        false,
 			"endpoint":       "",
@@ -626,29 +604,73 @@ func (s *server) GetStatus() http.HandlerFunc {
 			"retention_days": 0,
 		}
 
-		err := s.db.QueryRow(
-			`SELECT COALESCE(proxy_url, ''), COALESCE(s3_enabled, false), COALESCE(s3_endpoint, ''), COALESCE(s3_region, ''), COALESCE(s3_bucket, ''), COALESCE(s3_path_style, false), COALESCE(s3_public_url, ''), COALESCE(media_delivery, ''), COALESCE(s3_retention_days, 0), hmac_key FROM users WHERE id = $1`,
-			txtid,
-		).Scan(&proxyURL, &s3Enabled, &s3Endpoint, &s3Region, &s3Bucket, &s3PathStyle, &s3PublicURL, &s3MediaDelivery, &s3RetentionDays, &hmacKey)
+		var proxyURL string
+		var hmacConfigured bool
 
-		if err == nil {
-			s3Config["enabled"] = s3Enabled
-			s3Config["endpoint"] = s3Endpoint
-			s3Config["region"] = s3Region
-			s3Config["bucket"] = s3Bucket
-			s3Config["path_style"] = s3PathStyle
-			s3Config["public_url"] = s3PublicURL
-			s3Config["media_delivery"] = s3MediaDelivery
-			s3Config["retention_days"] = s3RetentionDays
-		} else if err != sql.ErrNoRows {
-			log.Warn().Err(err).Str("user_id", txtid).Msg("Failed to query user status row")
+		rowFromCache := false
+		if getStatusRowCache != nil {
+			if raw, found := getStatusRowCache.Get(txtid); found {
+				if snap, ok := raw.(*getStatusDBRowCached); ok {
+					proxyURL = snap.ProxyURL
+					hmacConfigured = snap.HmacConfigured
+					s3Config["enabled"] = snap.S3Enabled
+					s3Config["endpoint"] = snap.S3Endpoint
+					s3Config["region"] = snap.S3Region
+					s3Config["bucket"] = snap.S3Bucket
+					s3Config["path_style"] = snap.S3PathStyle
+					s3Config["public_url"] = snap.S3PublicURL
+					s3Config["media_delivery"] = snap.S3MediaDelivery
+					s3Config["retention_days"] = snap.S3RetentionDays
+					rowFromCache = true
+				}
+			}
+		}
+
+		if !rowFromCache {
+			var s3Enabled bool
+			var s3Endpoint, s3Region, s3Bucket, s3PublicURL, s3MediaDelivery string
+			var s3PathStyle bool
+			var s3RetentionDays int
+			var hmacKey []byte
+
+			err := s.db.QueryRow(
+				`SELECT COALESCE(proxy_url, ''), COALESCE(s3_enabled, false), COALESCE(s3_endpoint, ''), COALESCE(s3_region, ''), COALESCE(s3_bucket, ''), COALESCE(s3_path_style, false), COALESCE(s3_public_url, ''), COALESCE(media_delivery, ''), COALESCE(s3_retention_days, 0), hmac_key FROM users WHERE id = $1`,
+				txtid,
+			).Scan(&proxyURL, &s3Enabled, &s3Endpoint, &s3Region, &s3Bucket, &s3PathStyle, &s3PublicURL, &s3MediaDelivery, &s3RetentionDays, &hmacKey)
+
+			if err == nil {
+				s3Config["enabled"] = s3Enabled
+				s3Config["endpoint"] = s3Endpoint
+				s3Config["region"] = s3Region
+				s3Config["bucket"] = s3Bucket
+				s3Config["path_style"] = s3PathStyle
+				s3Config["public_url"] = s3PublicURL
+				s3Config["media_delivery"] = s3MediaDelivery
+				s3Config["retention_days"] = s3RetentionDays
+				hmacConfigured = len(hmacKey) > 0
+				if getStatusRowCache != nil {
+					getStatusRowCache.Set(txtid, &getStatusDBRowCached{
+						ProxyURL:        proxyURL,
+						S3Enabled:       s3Enabled,
+						S3Endpoint:      s3Endpoint,
+						S3Region:        s3Region,
+						S3Bucket:        s3Bucket,
+						S3PathStyle:     s3PathStyle,
+						S3PublicURL:     s3PublicURL,
+						S3MediaDelivery: s3MediaDelivery,
+						S3RetentionDays: s3RetentionDays,
+						HmacConfigured:  hmacConfigured,
+					}, cache.DefaultExpiration)
+				}
+			} else if err != sql.ErrNoRows {
+				log.Warn().Err(err).Str("user_id", txtid).Msg("Failed to query user status row")
+			}
 		}
 
 		proxyConfig := map[string]interface{}{
 			"enabled":   proxyURL != "",
 			"proxy_url": proxyURL,
 		}
-		hmacConfigured := len(hmacKey) > 0
 
 		response := map[string]interface{}{
 			"id":              txtid,
@@ -3061,6 +3083,21 @@ func (s *server) SendPresence() http.HandlerFunc {
 	}
 }
 
+// Erros esperados do whatsmeow para foto de perfil indisponível / privada.
+func isWuzapiAvatarNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not found") ||
+		strings.Contains(s, "does not have") ||
+		strings.Contains(s, "doesn't have") ||
+		strings.Contains(s, "no profile") ||
+		strings.Contains(s, "hidden") ||
+		strings.Contains(s, "item-not-found") ||
+		strings.Contains(s, "not-authorized")
+}
+
 // Gets avatar info for user
 func (s *server) GetAvatar() http.HandlerFunc {
 
@@ -3106,6 +3143,10 @@ func (s *server) GetAvatar() http.HandlerFunc {
 			ExistingID: existingID,
 		})
 		if err != nil {
+			if isWuzapiAvatarNotFoundError(err) {
+				s.Respond(w, r, http.StatusNotFound, errors.New("avatar not available"))
+				return
+			}
 			msg := fmt.Sprintf("failed to get avatar: %v", err)
 			log.Error().Msg(msg)
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(msg))
@@ -3113,7 +3154,7 @@ func (s *server) GetAvatar() http.HandlerFunc {
 		}
 
 		if pic == nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("no avatar found"))
+			s.Respond(w, r, http.StatusNotFound, errors.New("no avatar found"))
 			return
 		}
 

@@ -635,8 +635,21 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 
 	case *events.StreamReplaced:
-		log.Info().Msg("Received StreamReplaced event")
-		return
+		// Outra conexão tomou o stream (mesmo número em outro lugar ou duplicata de sessão).
+		// Antes: return aqui não disparava webhook nem connected=0 — backend ficava “conectado” e gerava timeout.
+		log.Info().Str("userid", mycli.userID).Msg("Received StreamReplaced event — marking disconnected and notifying webhook")
+		postmap["type"] = "StreamReplaced"
+		defer func() {
+			select {
+			case killchannel[mycli.userID] <- true:
+			default:
+			}
+		}()
+		sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
+		_, err := mycli.db.Exec(sqlStmt, mycli.userID)
+		if err != nil {
+			log.Error().Err(err).Msg(sqlStmt)
+		}
 	case *events.Message:
 		postmap["type"] = "Message"
 		infoBytes, err := json.Marshal(evt.Info)

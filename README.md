@@ -143,6 +143,24 @@ WEBHOOK_RETRY_DELAY_SECONDS=30
 WEBHOOK_ERROR_QUEUE_NAME=wuzapi_dead_letter_webhooks
 ```
 
+### Health (fork SysIgreja)
+
+* `GET /live` — resposta imediata sem Postgres; indicado para **probes** (Coolify, uptime).
+* `GET /health` — diagnóstico completo; contagens de usuários/sessões são **cacheadas por alguns segundos** para reduzir carga sob tráfego alto.
+
+### Limites de concorrência de envio (recomendado com muitos operadores)
+
+Com `WUZAPI_SEND_MAX_CONCURRENT` > 0 o binário ativa semáforo global + por usuário (`send_limit.go`). Exemplo:
+
+```
+WUZAPI_SEND_MAX_CONCURRENT=6
+WUZAPI_SEND_MAX_PER_USER=12
+WUZAPI_SEND_MAX_PER_USER_BULK=3
+WUZAPI_SEND_ACQUIRE_TIMEOUT_MS=30000
+```
+
+Subir o valor **gradualmente** (ex. 4→8): muito baixo forma fila; muito alto pode saturar o whatsmeow e gerar timeouts no proxy.
+
 ### Important Notes
 
 #### Auto-Generated Credentials

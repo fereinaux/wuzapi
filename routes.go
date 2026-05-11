@@ -48,6 +48,7 @@ func (s *server) routes() {
 	}
 
 	s.router.Handle("/health", s.GetHealth()).Methods("GET")
+	s.router.Handle("/live", s.GetLive()).Methods("GET")
 
 	adminRoutes := s.router.PathPrefix("/admin").Subrouter()
 	adminRoutes.Use(s.authadmin)
