@@ -25,6 +25,8 @@ services:
         condition: service_healthy
     networks:
       - wuzapi-network
+      # Rede do Coolify: permite resolver Postgres gerenciado (host interno, ex. container do recurso).
+      - coolify
     restart: on-failure
 
   db:
@@ -49,6 +51,10 @@ services:
 networks:
   wuzapi-network:
     driver: bridge
+  # No Coolify o host já expõe a rede externa `coolify` (Postgres gerenciado, etc.).
+  # Localmente, crie uma vez: docker network create coolify — ou não anexe esta rede no dev.
+  coolify:
+    external: true
 
 volumes:
   db_data:
