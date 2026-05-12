@@ -50,4 +50,8 @@ RUN chmod +x /app/wuzapi && \
     chmod -R 755 /app && \
     chown -R root:root /app
 
+# /live: handler leve (sem Postgres / sem percorrer clientes), seguro para liveness probe.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:8080/live || exit 1
+
 ENTRYPOINT ["/app/wuzapi", "--logtype=console", "--color=true"]
