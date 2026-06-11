@@ -3369,6 +3369,127 @@ func (s *server) React() http.HandlerFunc {
 	}
 }
 
+// PinMessage pins or unpins a message in a chat (WhatsApp Web multidevice).
+func (s *server) PinMessage() http.HandlerFunc {
+
+	type pinStruct struct {
+		Phone           string
+		Id              string
+		Participant     string
+		DurationSeconds uint32
+		Pin             *bool
+	}
+
+	const defaultPinDurationSeconds uint32 = 604800
+
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+			return
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		var t pinStruct
+		err := decoder.Decode(&t)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
+			return
+		}
+
+		if t.Phone == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Phone in Payload"))
+			return
+		}
+
+		if t.Id == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Id in Payload"))
+			return
+		}
+
+		pin := true
+		if t.Pin != nil {
+			pin = *t.Pin
+		}
+
+		recipient, ok := parseJID(t.Phone)
+		if !ok {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not parse Phone JID"))
+			return
+		}
+
+		msgid := t.Id
+		fromMe := false
+		if strings.HasPrefix(msgid, "me:") {
+			fromMe = true
+			msgid = msgid[len("me:"):]
+		}
+
+		key := &waCommon.MessageKey{
+			RemoteJID: proto.String(recipient.String()),
+			FromMe:    proto.Bool(fromMe),
+			ID:        proto.String(msgid),
+		}
+
+		var participantJID types.JID
+		if !fromMe && t.Participant != "" {
+			if pj, ok := parseJID(t.Participant); ok {
+				participantJID = pj
+			}
+		}
+		if !fromMe && participantJID.String() != "" {
+			key.Participant = proto.String(participantJID.String())
+		} else if fromMe && recipient.Server == types.GroupServer && client.Store.ID != nil {
+			key.Participant = proto.String(client.Store.ID.ToNonAD().String())
+		}
+
+		pinType := waE2E.PinInChatMessage_PIN_FOR_ALL
+		if !pin {
+			pinType = waE2E.PinInChatMessage_UNPIN_FOR_ALL
+		}
+
+		msg := &waE2E.Message{
+			PinInChatMessage: &waE2E.PinInChatMessage{
+				Key:               key,
+				Type:              pinType.Enum(),
+				SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+			},
+		}
+
+		if pin {
+			duration := t.DurationSeconds
+			if duration == 0 {
+				duration = defaultPinDurationSeconds
+			}
+			msg.MessageContextInfo = &waE2E.MessageContextInfo{
+				MessageAddOnExpiryType:     waE2E.MessageContextInfo_STATIC.Enum(),
+				MessageAddOnDurationInSecs: proto.Uint32(duration),
+			}
+		}
+
+		var resp whatsmeow.SendResponse
+		resp, err = client.SendMessage(context.Background(), recipient, msg)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending pin message: %v", err)))
+			return
+		}
+
+		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Bool("pin", pin).Msg("Pin message sent")
+		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": msgid, "Pin": pin}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+
+		return
+	}
+}
+
 // Mark messages as read
 func (s *server) MarkRead() http.HandlerFunc {
 
@@ -5755,9 +5876,9 @@ func (s *server) DownloadMedia() http.HandlerFunc {
 			encSha,
 			fileSha,
 			mediaKey,
-			int(t.FileLength),
 			mediaType,
 			"",
+			false,
 		)
 		if err != nil {
 			log.Warn().Err(err).Str("userid", txtid).Str("mediaType", t.MediaType).Msg("download media failed")

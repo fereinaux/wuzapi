@@ -947,6 +947,28 @@ paths:
             application/json:
               schema:
                 example: {"code":200,"data":{"Details":"Sent","Id":"3EB06F9067F80BAB89FF","Timestamp":"2022-05-10T12:49:08-03:00"},"success":true}
+  /chat/pin:
+    post:
+      tags:
+        - Chat
+      summary: Pins or unpins a message
+      description: Pins or unpins a message in a chat. Phone and Id are mandatory. If the message is yours, prefix Id with 'me:'. Participant is required in groups when the message is not yours. DurationSeconds applies when Pin is true (default 604800).
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/definitions/PinMessage'
+
+      responses:
+        200:
+          description: Response
+          content:
+            application/json:
+              schema:
+                example: {"code":200,"data":{"Details":"Sent","Id":"3EB06F9067F80BAB89FF","Pin":true,"Timestamp":1715352548},"success":true}
   /chat/send/text:
     post:
       tags:
@@ -2355,6 +2377,27 @@ definitions:
       Id:
         type: string
         example: "me:3EB06F9067F80BAB89FF"
+  PinMessage:
+    type: object
+    required:
+      - Phone
+      - Id
+    properties:
+      Phone:
+        type: string
+        example: "5491155553935@s.whatsapp.net"
+      Id:
+        type: string
+        example: "me:3EB06F9067F80BAB89FF"
+      Participant:
+        type: string
+        example: "5491155554444@s.whatsapp.net"
+      DurationSeconds:
+        type: integer
+        example: 604800
+      Pin:
+        type: boolean
+        example: true
 
   MessagePoll:
     type: object

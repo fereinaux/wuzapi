@@ -981,6 +981,33 @@
           },
           "response": []
         },
+        {
+          "name": "Pin Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "token",
+                "value": "{{token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"Phone\": \"5491155553935@s.whatsapp.net\",\n  \"Id\": \"me:3EB06F9067F80BAB89FF\",\n  \"DurationSeconds\": 604800,\n  \"Pin\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chat/pin",
+              "host": ["{{baseUrl}}"],
+              "path": ["chat", "pin"]
+            },
+            "description": "Pin or unpin a message in a chat"
+          },
+          "response": []
+        },
           {
             "name": "Send Buttons - Reply Only (max 3)",
             "request": {

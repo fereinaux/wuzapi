@@ -878,6 +878,24 @@ curl -X POST -H 'Token: 1234ABCD' -H 'Content-Type: application/json' --data '{"
 
 ---
 
+## Pin or unpin messages
+
+Pins or unpins an existing message in a chat. Id is the message Id to pin; if it is your own message, prefix the Id with `me:`.
+
+endpoint: _/chat/pin_
+
+method: **POST**
+
+```
+curl -X POST -H 'Token: 1234ABCD' -H 'Content-Type: application/json' --data '{"Phone":"5491155554444@s.whatsapp.net","Id":"me:069EDE53E81CB5A4773587FB96CB3ED3","DurationSeconds":604800,"Pin":true}' http://localhost:8080/chat/pin
+```
+
+- `DurationSeconds`: optional when pinning (default `604800` = 7 days). Common values: `86400` (24h), `604800` (7d), `2592000` (30d).
+- `Pin`: `true` to pin, `false` to unpin.
+- `Participant`: required in groups when the pinned message is not yours.
+
+---
+
 ## Download Image
 
 Downloads an Image from a message and retrieves it Base64 media encoded. Required request parameters are: Url, MediaKey, Mimetype, FileSHA256 and FileLength
